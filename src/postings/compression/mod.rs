@@ -53,8 +53,10 @@ impl BlockEncoder {
 /// We ensure that the OutputBuffer is align on 128 bits
 /// in order to run SSE2 linear search on it.
 #[repr(align(128))]
+#[derive(Clone)]
 pub(crate) struct AlignedBuffer(pub [u32; COMPRESSION_BLOCK_SIZE]);
 
+#[derive(Clone)]
 pub struct BlockDecoder {
     bitpacker: BitPacker4x,
     output: AlignedBuffer,
@@ -108,9 +110,8 @@ impl BlockDecoder {
         self.output.0[idx]
     }
 
-    pub fn clear(&mut self) {
-        self.output_len = 0;
-        self.output.0.iter_mut().for_each(|el| *el = TERMINATED);
+    pub fn fill(&mut self, val: u32) {
+        self.output.0.iter_mut().for_each(|el| *el = val);
     }
 }
 
@@ -243,19 +244,6 @@ pub mod tests {
         for i in 0..n {
             assert_eq!(vals[i], decoder.output(i));
         }
-    }
-
-    #[test]
-    fn test_clearing() {
-        let mut encoder = BlockEncoder::new();
-        let vals = (0u32..128u32).map(|i| i * 3).collect::<Vec<_>>();
-        let (num_bits, compressed) = encoder.compress_block_sorted(&vals[..], 0u32);
-        let mut decoder = BlockDecoder::default();
-        decoder.uncompress_block_sorted(compressed, 0u32, num_bits);
-        assert_eq!(decoder.output_len, 128);
-        assert_eq!(decoder.output_array(), &vals[..]);
-        decoder.clear();
-        assert!(decoder.output_array().is_empty());
     }
 
     #[test]

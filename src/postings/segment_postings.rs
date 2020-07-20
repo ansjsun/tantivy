@@ -13,6 +13,7 @@ use crate::schema::IndexRecordOption;
 use crate::DocId;
 
 use crate::directory::ReadOnlySource;
+use crate::fieldnorm::FieldNormReader;
 use crate::postings::BlockSegmentPostings;
 
 /// `SegmentPostings` represents the inverted list or postings associated to
@@ -20,8 +21,9 @@ use crate::postings::BlockSegmentPostings;
 ///
 /// As we iterate through the `SegmentPostings`, the frequencies are optionally decoded.
 /// Positions on the other hand, are optionally entirely decoded upfront.
+#[derive(Clone)]
 pub struct SegmentPostings {
-    block_cursor: BlockSegmentPostings,
+    pub(crate) block_cursor: BlockSegmentPostings,
     cur: usize,
     position_reader: Option<PositionReader>,
     block_searcher: BlockSearcher,
@@ -38,6 +40,12 @@ impl SegmentPostings {
         }
     }
 
+    /// Returns the overall number of documents in the block postings.
+    /// It does not take in account whether documents are deleted or not.
+    pub fn doc_freq(&self) -> u32 {
+        self.block_cursor.doc_freq()
+    }
+
     /// Creates a segment postings object with the given documents
     /// and no frequency encoded.
     ///
@@ -49,7 +57,8 @@ impl SegmentPostings {
     pub fn create_from_docs(docs: &[u32]) -> SegmentPostings {
         let mut buffer = Vec::new();
         {
-            let mut postings_serializer = PostingsSerializer::new(&mut buffer, false, false);
+            let mut postings_serializer = PostingsSerializer::new(&mut buffer, false, false, None);
+            postings_serializer.new_term(docs.len() as u32);
             for &doc in docs {
                 postings_serializer.write_doc(doc, 1u32);
             }
@@ -64,6 +73,31 @@ impl SegmentPostings {
             IndexRecordOption::Basic,
         );
         SegmentPostings::from_block_postings(block_segment_postings, None)
+    }
+
+    /// Helper functions to create `SegmentPostings` for tests.
+    pub fn create_from_docs_and_tfs(
+        doc_and_tfs: &[(u32, u32)],
+        fieldnorm_reader: Option<FieldNormReader>,
+    ) -> crate::Result<SegmentPostings> {
+        let mut buffer = Vec::new();
+        let mut postings_serializer =
+            PostingsSerializer::new(&mut buffer, true, false, fieldnorm_reader);
+        postings_serializer.new_term(doc_and_tfs.len() as u32);
+        for &(doc, tf) in doc_and_tfs {
+            postings_serializer.write_doc(doc, tf);
+        }
+        postings_serializer.close_term(doc_and_tfs.len() as u32)?;
+        let block_segment_postings = BlockSegmentPostings::from_data(
+            doc_and_tfs.len() as u32,
+            ReadOnlySource::from(buffer),
+            IndexRecordOption::WithFreqs,
+            IndexRecordOption::WithFreqs,
+        );
+        Ok(SegmentPostings::from_block_postings(
+            block_segment_postings,
+            None,
+        ))
     }
 
     /// Reads a Segment postings from an &[u8]
@@ -90,6 +124,7 @@ impl DocSet for SegmentPostings {
     // next needs to be called a first time to point to the correct element.
     #[inline]
     fn advance(&mut self) -> DocId {
+        assert!(self.block_cursor.block_is_loaded());
         if self.cur == COMPRESSION_BLOCK_SIZE - 1 {
             self.cur = 0;
             self.block_cursor.advance();
@@ -141,7 +176,7 @@ impl DocSet for SegmentPostings {
 
 impl HasLen for SegmentPostings {
     fn len(&self) -> usize {
-        self.block_cursor.doc_freq()
+        self.block_cursor.doc_freq() as usize
     }
 }
 
